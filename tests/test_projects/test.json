@@ -1,0 +1,6 @@
+{
+  "name": "Projects App Test Suite",
+  "description": "Tests for the projects app: hierarchical resource types with RBAC + ACL",
+  "always_cleanup": true,
+  "isolation": "none"
+}

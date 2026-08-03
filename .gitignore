@@ -1,0 +1,5 @@
+.idea
+
+# Local debee override — carries the real remote connection/creds (keep untracked,
+# like keen-docs .local.db-gen.json). The base debee.env is the localhost template.
+.debee.env
