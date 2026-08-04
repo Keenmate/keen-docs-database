@@ -21,9 +21,39 @@ from public.start_version_update('1',
     _description := 'sample component / infrastructure / guide doc_sets');
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 1. COMPONENT set: web-multiselect (npm) with two versions
+-- 1. COMPONENT set: web-multiselect (npm) — the FULLY-SPECIFIED reference doc_set.
+--    Everything a single doc site configures (the keen-docs equivalent of one
+--    mkdocs.yml) lives on the set: title + description, a home page, the settings
+--    blob (theme / header + footer links / social / generator), and a navigation
+--    tree in public.doc_nav (seeded further down). See ../postgresql-permissions-model-docs.
 -- ─────────────────────────────────────────────────────────────────────────────
-select * from public.ensure_doc_set('examples', 'seed', 'web-multiselect', 'Web MultiSelect', 'component');
+select * from public.ensure_doc_set('examples', 'seed', 'web-multiselect',
+    _title       := 'Web MultiSelect',
+    _kind_code   := 'component',
+    _description := 'A lightweight, themeable multi-select web component — typeahead, virtual scroll, trees, RTL and full keyboard navigation.',
+    _home_slug   := 'index',
+    _settings    := $settings$
+    {
+      "author": "KeenMate",
+      "site_url": "https://web-multiselect.keenmate.dev",
+      "repository": "https://github.com/keenmate/web-multiselect",
+      "theme":  { "accent": "#4f46e5", "logo": "assets/logo.svg", "favicon": "assets/logo.svg" },
+      "header_links": [
+        { "label": "GitHub", "url": "https://github.com/keenmate/web-multiselect", "icon": "github" },
+        { "label": "npm",    "url": "https://www.npmjs.com/package/@keenmate/web-multiselect", "icon": "npm" }
+      ],
+      "footer": {
+        "copyright": "© KeenMate. MIT-licensed.",
+        "links": [
+          { "label": "Theme Designer", "url": "https://theme-designer.keenmate.dev" },
+          { "label": "All components",  "url": "https://docs.keenmate.dev" }
+        ]
+      },
+      "social":      [ { "icon": "globe", "url": "https://keenmate.com", "name": "KeenMate" } ],
+      "head_assets": [ { "rel": "preconnect", "href": "https://cdn.jsdelivr.net" } ],
+      "generator":   false
+    }
+    $settings$::jsonb);
 select * from public.ensure_doc_set_package('examples', 'seed', 'web-multiselect', 'npm', '@keenmate/web-multiselect', true);
 
 -- v2.0.0 — stable, the default landing version, covers the whole 2.x line.
@@ -37,6 +67,13 @@ select * from public.ensure_doc_variant('examples', 'seed', 'web-multiselect', '
     _title := 'v3.0.0-rc1', _is_default := false, _show_in_path := true, _sort_order := 300,
     _maturity_code := 'rc',
     _applies_to := '[{"range": "3.0.0-rc*", "from": "3.0.0", "to": "3.0.1"}]'::jsonb);
+
+-- A hidden 'shared' variant (show_in_path = false) holds DOC-SET-WIDE pages — content that
+-- belongs to the whole component, not one version (changelog, migration). Its URL omits the
+-- version segment (/web-multiselect/changelog), and being off-path it is NOT a version, so
+-- the sidebar's version selector skips it.
+select * from public.ensure_doc_variant('examples', 'seed', 'web-multiselect', 'shared',
+    _title := 'shared', _is_default := false, _show_in_path := false, _sort_order := 0);
 
 -- Rich pages: the stored blob is the whole .md (front matter + body exercising the
 -- directive vocabulary — callout / columns / col / card / showcase / tables / fences).
@@ -339,6 +376,100 @@ The 3.0 line rebuilds the component on a **signals**-based core for fine-grained
 reactivity, cutting re-renders on large option sets.
 $md$,
     _frontmatter := '{"nav": 1, "description": "The 3.0 line rebuilds the internals on signals for fine-grained reactivity.", "keywords": ["signals", "reactivity", "preview", "release candidate", "migration"]}'::jsonb);
+
+-- Doc-set-wide pages: stored in the hidden 'shared' variant, so they are reachable at
+-- /web-multiselect/changelog and /web-multiselect/migration regardless of the active version.
+select * from public.ensure_document('examples', 'seed', 'web-multiselect', 'shared', 'changelog', 'Changelog',
+    _content := $md$---
+title: Changelog
+description: Notable changes across web-multiselect releases.
+keywords: [changelog, releases, history, breaking changes]
+---
+
+# Changelog
+
+A **doc-set-wide** page — one changelog for the whole component, reachable at
+`/web-multiselect/changelog` no matter which version you are viewing. It lives in the hidden
+`shared` variant, not under a version.
+
+## 2.0.0 — core adoption
+
+- Rebuilt on `@keenmate/web-components-core` (`BlissElement`).
+- **Breaking:** `onSelect` / `onDeselect` / `onChange` are event-handler properties.
+- **Breaking:** property writes are async (coalesced) — `await el.whenSettled()`.
+- `data-options` gains `csv` and `plain` formats with configurable delimiters.
+
+## 1.12.0
+
+- Independent dropdown / popover sizing via `--ms-dropdown-width`.
+- Tree render callback receives full tree context (`isBranch`, `level`, `path`, …).
+$md$);
+
+select * from public.ensure_document('examples', 'seed', 'web-multiselect', 'shared', 'migration', 'Migration v1 → v2',
+    _content := $md$---
+title: Migration v1 → v2
+description: The breaking API changes in the v2 core-adoption major, and how to update.
+keywords: [migration, upgrade, breaking changes, v2]
+---
+
+# Migration: v1 → v2
+
+Also a **doc-set-wide** page — migration is about moving *between* versions, so it is authored
+once for the whole set rather than inside a version folder.
+
+:::callout{type=info title="Why this is version-independent"}
+It describes the jump from v1 to v2, so it does not belong to either version's page tree — it
+belongs to the component.
+:::
+
+## 1. Handlers receive the event
+
+`onChange` receives the `CustomEvent` now — read `e.detail.selectedValues`:
+
+:::code{lang=js}
+el.onChange = (e) => save(e.detail.selectedValues);
+:::
+
+## 2. setAttributes takes typed camelCase keys
+
+:::code{lang=js}
+el.setAttributes({ searchPlaceholder: 'Search…', isCounterShown: true });
+:::
+$md$);
+
+-- Navigation tree (public.doc_nav) — the authored sidebar, mirroring an mkdocs `nav:`.
+-- Parents are ensured before children (full_title / sort_key derive from the parent). Leaves
+-- carry a slug (resolved against the active variant); sections carry none. Nesting is a '/'
+-- in the node path; sort_order orders siblings. get_doc_nav('web-multiselect') then returns
+-- these already in render order — a single ordered select, no recursion.
+--
+--   Overview                        (leaf → index)
+--   Guides                          (section)
+--     Form integration              (leaf → form-integration)
+--   Live demos                      (section)
+--     Interactive islands           (leaf → islands)
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'overview', 'Overview',
+    _slug := 'index', _sort_order := 0);
+
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'guides', 'Guides',
+    _is_section := true, _sort_order := 1);
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'guides/forms', 'Form integration',
+    _slug := 'form-integration', _sort_order := 0);
+
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'demos', 'Live demos',
+    _is_section := true, _sort_order := 2);
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'demos/islands', 'Interactive islands',
+    _slug := 'islands', _sort_order := 0);
+
+-- Project section — DOC-SET-WIDE leaves: each pins _variant_code := 'shared', so the sidebar
+-- links to /web-multiselect/changelog (no version segment) and the same link shows under
+-- every version.
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project', 'Project',
+    _is_section := true, _sort_order := 3);
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project/changelog', 'Changelog',
+    _slug := 'changelog', _variant_code := 'shared', _sort_order := 0);
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project/migration', 'Migration v1 → v2',
+    _slug := 'migration', _variant_code := 'shared', _sort_order := 1);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. INFRASTRUCTURE set: azure / aws divisions, no versions, no package

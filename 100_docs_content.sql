@@ -92,15 +92,27 @@ on conflict (code) do nothing;
 
 -- A documented subject. `code` is the URL slug (explicit + stable, independent of any
 -- registry name); `kind_code` decides how its variants are interpreted.
+-- A documented subject. Beyond identity (code/kind/title) a set carries its whole
+-- presentation surface — the keen-docs equivalent of one mkdocs.yml:
+--   description : the set's tagline (site_description) — indexed, shown on hub cards.
+--   home_slug   : the landing page (mkdocs `Home: index.md`); when set, /:set renders this
+--                 document instead of the auto-generated variant list.
+--   settings    : the rest of the chrome as one blob (mirrors mkdocs.yml's single file) —
+--                 { author, site_url, theme:{accent,logo,favicon}, footer:{copyright,links},
+--                   social:[…], head_assets:[…], generator:bool }.
+-- The authored navigation tree lives in public.doc_nav (one row per node), not here.
 create table if not exists public.doc_set (
-    created_at timestamp with time zone default now()           not null,
-    created_by text                     default 'unknown'::text not null,
-    updated_at timestamp with time zone default now()           not null,
-    updated_by text                     default 'unknown'::text not null,
-    doc_set_id integer generated always as identity primary key,
-    code       text not null,
-    kind_code  text not null default 'component' references const.doc_set_kind,
-    title      text
+    created_at  timestamp with time zone default now()           not null,
+    created_by  text                     default 'unknown'::text not null,
+    updated_at  timestamp with time zone default now()           not null,
+    updated_by  text                     default 'unknown'::text not null,
+    doc_set_id  integer generated always as identity primary key,
+    code        text not null,
+    kind_code   text not null default 'component' references const.doc_set_kind,
+    title       text,
+    description text,
+    home_slug   text,
+    settings    jsonb not null default '{}'::jsonb
 );
 
 create unique index if not exists uq_doc_set_code on public.doc_set (code);
@@ -189,6 +201,40 @@ create index        if not exists ix_document_search on public.document using gi
 create index        if not exists ix_trgm_document_search
     on public.document using gist (nrm_search_data ext.gist_trgm_ops);
 
+-- public.doc_nav — the authored navigation tree of a set, ONE row per node, stored as a
+-- materialized path (ext.ltree) so rendering the sidebar is a single ordered select with no
+-- recursion at all (the auth.permission / gcp-documenthub category_tree pattern). Precomputed:
+--   node_path    : the full path; segments are node codes, e.g. guides.forms
+--   sort_key     : zero-padded sibling order joined along the path — the pre-order sequence a
+--                  renderer walks, so `order by sort_key` alone yields the drawn tree.
+--   has_children : set on the PARENT at write time, so "is this a branch?" is a column read.
+--   full_title   : the breadcrumb ("Guides / Forms"), denormalized from the ancestors.
+-- A node is either a SECTION (a grouping label, slug null) or a LEAF pointing at a page by
+-- slug. slug is version-independent — the harness resolves slug → document in the variant it
+-- is rendering — so the same nav serves every version. variant_code optionally pins a leaf
+-- to one variant (e.g. a doc-set-wide 'main' page); null means "the active variant".
+create table if not exists public.doc_nav (
+    created_at   timestamp with time zone default now()           not null,
+    created_by   text                     default 'unknown'::text not null,
+    updated_at   timestamp with time zone default now()           not null,
+    updated_by   text                     default 'unknown'::text not null,
+    doc_nav_id   integer   generated always as identity primary key,
+    doc_set_id   integer   not null references public.doc_set,
+    node_path    ext.ltree not null,
+    label        text      not null,
+    full_title   text,
+    slug         text,
+    variant_code text,
+    is_section   boolean   not null default false,
+    has_children boolean   not null default false,
+    sort_order   integer   not null default 0,
+    sort_key     text
+);
+
+create unique index if not exists uq_doc_nav      on public.doc_nav (doc_set_id, node_path);
+create index        if not exists ix_doc_nav_path on public.doc_nav using gist (node_path);
+create index        if not exists ix_doc_nav_set  on public.doc_nav (doc_set_id, sort_key);
+
 -- ---------------------------------------------------------------------------
 -- Functions
 -- ---------------------------------------------------------------------------
@@ -263,22 +309,35 @@ create or replace function public.ensure_doc_set(
     _code text,
     _title text default null,
     _kind_code text default null,
+    _description text default null,
+    _home_slug text default null,
+    _settings jsonb default null,
     _tenant_id integer default 1
 )
-returns table(__doc_set_id integer, __code text, __kind_code text, __title text)
+returns table(__doc_set_id integer, __code text, __kind_code text, __title text,
+              __description text, __home_slug text, __settings jsonb)
 rows 1
 language plpgsql
 as $$
 begin
+    -- null-means-leave-alone for every optional field, so a later call that only sets the
+    -- title (e.g. ensure_doc_set_package's bootstrap) never wipes an already-seeded homepage
+    -- or settings blob.
     return query
-        insert into public.doc_set as s (code, kind_code, title, created_by, updated_by)
-        values (_code, coalesce(_kind_code, 'component'), _title, _created_by, _created_by)
+        insert into public.doc_set as s
+            (code, kind_code, title, description, home_slug, settings, created_by, updated_by)
+        values (_code, coalesce(_kind_code, 'component'), _title, _description, _home_slug,
+                coalesce(_settings, '{}'::jsonb), _created_by, _created_by)
         on conflict (code) do update
-            set kind_code  = coalesce(_kind_code, s.kind_code),
-                title      = coalesce(_title, s.title),
-                updated_by = _created_by,
-                updated_at = now()
-        returning s.doc_set_id, s.code, s.kind_code, s.title;
+            set kind_code   = coalesce(_kind_code, s.kind_code),
+                title       = coalesce(_title, s.title),
+                description = coalesce(_description, s.description),
+                home_slug   = coalesce(_home_slug, s.home_slug),
+                settings    = coalesce(_settings, s.settings),
+                updated_by  = _created_by,
+                updated_at  = now()
+        returning s.doc_set_id, s.code, s.kind_code, s.title,
+                  s.description, s.home_slug, s.settings;
 end;
 $$;
 
@@ -301,7 +360,8 @@ declare
     ___doc_set_id integer;
 begin
     select eds.__doc_set_id into ___doc_set_id
-    from public.ensure_doc_set(_created_by, _correlation_id, _doc_set_code, null, null, _tenant_id) eds;
+    from public.ensure_doc_set(_created_by, _correlation_id, _doc_set_code,
+                               null, null, null, null, null, _tenant_id) eds;
 
     return query
         insert into public.doc_set_package as sp
@@ -339,7 +399,8 @@ declare
     ___doc_set_id integer;
 begin
     select eds.__doc_set_id into ___doc_set_id
-    from public.ensure_doc_set(_created_by, _correlation_id, _doc_set_code, null, null, _tenant_id) eds;
+    from public.ensure_doc_set(_created_by, _correlation_id, _doc_set_code,
+                               null, null, null, null, null, _tenant_id) eds;
 
     return query
         insert into public.doc_variant as v
@@ -449,11 +510,12 @@ $$;
 
 -- public.list_doc_sets — every documented subject with its primary package identity.
 create or replace function public.list_doc_sets()
-returns table(__code text, __kind_code text, __title text, __ecosystem_code text, __package_name text)
+returns table(__code text, __kind_code text, __title text, __description text,
+              __ecosystem_code text, __package_name text)
 language sql
 stable
 as $$
-    select s.code, s.kind_code, s.title, sp.ecosystem_code, sp.package_name
+    select s.code, s.kind_code, s.title, s.description, sp.ecosystem_code, sp.package_name
     from public.doc_set s
         left join lateral (
             select p.ecosystem_code, p.package_name
@@ -463,6 +525,119 @@ as $$
             limit 1
         ) sp on true
     order by s.code;
+$$;
+
+-- public.get_doc_set — a set's full presentation surface for the page shell: identity plus
+-- the home_slug and the settings blob (theme / footer / social / head assets). One row.
+create or replace function public.get_doc_set(_doc_set_code text)
+returns table(__code text, __kind_code text, __title text, __description text,
+              __home_slug text, __settings jsonb,
+              __ecosystem_code text, __package_name text)
+rows 1
+language sql
+stable
+as $$
+    select s.code, s.kind_code, s.title, s.description, s.home_slug, s.settings,
+           sp.ecosystem_code, sp.package_name
+    from public.doc_set s
+        left join lateral (
+            select p.ecosystem_code, p.package_name
+            from public.doc_set_package p
+            where p.doc_set_id = s.doc_set_id
+            order by p.is_primary desc, p.doc_set_package_id
+            limit 1
+        ) sp on true
+    where s.code = _doc_set_code;
+$$;
+
+-- public.ensure_doc_nav — upsert one navigation node by its materialized path, maintaining
+-- the precomputed tree fields so reads never recurse:
+--   _node_path is a human path ('guides/forms'); path_to_ltree sanitizes it to guides.forms.
+--   full_title and sort_key are derived from the PARENT node (already inserted), so parents
+--   must be ensured before children — exactly how an author lists a nav tree top-down.
+--   The parent is flagged has_children = true here, so a leaf test is a column read.
+create or replace function public.ensure_doc_nav(
+    _created_by text,
+    _correlation_id text,
+    _doc_set_code text,
+    _node_path text,
+    _label text,
+    _slug text default null,
+    _sort_order integer default 0,
+    _is_section boolean default false,
+    _variant_code text default null,
+    _tenant_id integer default 1
+)
+returns table(__doc_nav_id integer, __node_path text, __full_title text, __has_children boolean)
+rows 1
+language plpgsql
+as $$
+declare
+    __doc_set_id   integer;
+    __path         ext.ltree := helpers.path_to_ltree(_node_path);
+    __parent       ext.ltree := helpers.ltree_parent(__path);
+    __has_parent   boolean   := ext.nlevel(__path) > 1;
+    __parent_title text;
+    __parent_sort  text;
+begin
+    select s.doc_set_id into __doc_set_id from public.doc_set s where s.code = _doc_set_code;
+    if __doc_set_id is null then
+        raise exception 'ensure_doc_nav: unknown doc_set %', _doc_set_code;
+    end if;
+
+    if __has_parent then
+        select n.full_title, n.sort_key into __parent_title, __parent_sort
+        from public.doc_nav n
+        where n.doc_set_id = __doc_set_id and n.node_path = __parent;
+    end if;
+
+    return query
+        insert into public.doc_nav as n
+            (doc_set_id, node_path, label, slug, variant_code, is_section, sort_order,
+             full_title, sort_key, created_by, updated_by)
+        values
+            (__doc_set_id, __path, _label, _slug, _variant_code, _is_section, _sort_order,
+             nullif(concat_ws(' / ', __parent_title, _label), ''),
+             concat(coalesce(__parent_sort, ''), lpad(_sort_order::text, 4, '0'), '.'),
+             _created_by, _created_by)
+        on conflict (doc_set_id, node_path) do update
+            set label        = _label,
+                slug         = _slug,
+                variant_code = _variant_code,
+                is_section   = _is_section,
+                sort_order   = _sort_order,
+                full_title   = nullif(concat_ws(' / ', __parent_title, _label), ''),
+                sort_key     = concat(coalesce(__parent_sort, ''), lpad(_sort_order::text, 4, '0'), '.'),
+                updated_by   = _created_by,
+                updated_at   = now()
+        returning n.doc_nav_id, n.node_path::text, n.full_title, n.has_children;
+
+    -- precompute the parent's branch flag (no-op for a root node)
+    if __has_parent then
+        update public.doc_nav p
+        set has_children = true, updated_at = now(), updated_by = _created_by
+        where p.doc_set_id = __doc_set_id and p.node_path = __parent and p.has_children = false;
+    end if;
+end;
+$$;
+
+-- public.get_doc_nav — a set's navigation, already flattened into render order. `order by
+-- sort_key` alone reproduces the drawn tree (pre-order, siblings by sort_order); `level` is
+-- the indent depth. No recursive CTE — the tree was materialized at write time.
+create or replace function public.get_doc_nav(_doc_set_code text)
+returns table(
+    __level integer, __node_path text, __label text, __full_title text,
+    __slug text, __variant_code text, __is_section boolean, __has_children boolean
+)
+language sql
+stable
+as $$
+    select ext.nlevel(n.node_path)::integer, n.node_path::text, n.label, n.full_title,
+           n.slug, n.variant_code, n.is_section, n.has_children
+    from public.doc_nav n
+        inner join public.doc_set s on s.doc_set_id = n.doc_set_id
+    where s.code = _doc_set_code
+    order by n.sort_key;
 $$;
 
 -- public.list_doc_variants — a set's variants, most prominent first. show_in_path tells

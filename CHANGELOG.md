@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## doc_set presentation surface + navigation tree - 2026-08-04
+
+### One fully-specified `doc_set` (`100_docs_content.sql`)
+
+A `doc_set` was just `(code, kind, title)` — everything that makes it *one product's docs
+site* (the keen-docs equivalent of a single `mkdocs.yml`) had nowhere to live. Added the whole
+presentation surface, modelled after `../postgresql-permissions-model-docs/mkdocs.yml`:
+
+- **`public.doc_set`** gains `description` (the tagline / `site_description`, indexed + shown on
+  hub cards), `home_slug` (the landing page — mkdocs `Home: index.md`; when set, `/:set` renders
+  this document instead of the auto variant list), and `settings jsonb` — the rest of the chrome
+  as one blob (author, site_url, `theme:{accent,logo,favicon}`, `footer:{copyright,links}`,
+  header links, social, head assets, generator flag).
+- **`ensure_doc_set`** grows `_description` / `_home_slug` / `_settings` (all null-means-leave-
+  alone, so the package/variant bootstrap calls never wipe a seeded homepage). New
+  **`get_doc_set`** returns the full surface for the page shell; **`list_doc_sets`** now includes
+  `description`.
+
+### Navigation as a materialized-path tree (`public.doc_nav`)
+
+The sidebar was derived flat from slugs and page `nav:` frontmatter was dropped. Now the
+authored nav is stored, following the **`auth.permission` / gcp-documenthub `category_tree`
+pattern** — one row per node, everything precomputed so **rendering is a single ordered select,
+no recursion**:
+
+- **`node_path ext.ltree`** (path of node codes), **`sort_key`** (zero-padded sibling order
+  joined along the path → the pre-order render sequence), **`has_children`** (set on the parent
+  at write time — a branch test is a column read), **`full_title`** (denormalized breadcrumb).
+  A node is a SECTION (label, no slug) or a LEAF (points at a page by version-independent slug).
+- **`ensure_doc_nav`** upserts a node by its `'guides/forms'` path (sanitized via
+  `helpers.path_to_ltree`), deriving `full_title`/`sort_key` from the parent and flagging the
+  parent `has_children`. **`get_doc_nav`** returns the tree already in render order
+  (`order by sort_key`, depth via `ext.nlevel`). ltree + `helpers.ltree_parent/path_to_ltree`
+  were already vendored here.
+
+### Seed (`999_examples.sql`)
+
+`web-multiselect` is now the **fully-specified reference set**: description, `home_slug=index`,
+the settings blob, and a five-node nav tree (`Overview` · `Guides > Form integration` ·
+`Live demos > Interactive islands`). The other two sets stay minimal on purpose.
+
+Run loop after pulling this: `make setup` (recreate + seed) → in keen-docs `make db-gen`
+(regenerate the `ensure_doc_set` / `get_doc_set` / `ensure_doc_nav` / `get_doc_nav` wrappers).
+
 ## keen-docs adaptation - 2026-08-03
 
 ### Full-text search projection (`100_docs_content.sql`)
