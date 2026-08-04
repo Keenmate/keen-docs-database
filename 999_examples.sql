@@ -503,4 +503,91 @@ select * from public.ensure_document('examples', 'seed', 'backend-guidelines', '
     E'# Testing\n\nEvery public function gets a **round-trip** test.',
     '{"description": "Testing rules: round-trip coverage for every public function.", "keywords": ["testing", "round-trip", "coverage", "quality"]}'::jsonb);
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 4. HUB (global) SITE: the docs.keenmate.dev aggregate — its own landing, standalone
+--    global pages, and a cross-set navigation. Parallels a doc_set but at the site level.
+-- ─────────────────────────────────────────────────────────────────────────────
+select * from public.ensure_site('examples', 'seed', 'hub',
+    _title       := 'KeenMate Docs',
+    _description := 'Component libraries, guides and infrastructure — documented in one place.',
+    _home_slug   := 'index',
+    _settings    := $settings$
+    {
+      "author": "KeenMate",
+      "site_url": "https://docs.keenmate.dev",
+      "theme":  { "accent": "#0ea5e9" },
+      "footer": {
+        "copyright": "© KeenMate. MIT-licensed.",
+        "links": [ { "label": "keenmate.com", "url": "https://keenmate.com" } ]
+      },
+      "social": [ { "icon": "github", "url": "https://github.com/keenmate", "name": "GitHub" } ]
+    }
+    $settings$::jsonb);
+
+-- Global standalone pages (site_page) — not under any doc_set.
+select * from public.ensure_site_page('examples', 'seed', 'hub', 'index', 'KeenMate Docs',
+    _content := $md$---
+title: KeenMate Docs
+description: Component libraries, guides and infrastructure — documented in one place.
+keywords: [keenmate, documentation, components, guides, hub]
+---
+
+Everything KeenMate ships, documented in one place — live component demos, backend
+guidelines, and infrastructure notes. The title above comes from the hub's own settings,
+so the page body starts straight with content — no repeated heading.
+
+:::columns{cols="4/4/4"}
+
+:::card{title="Components"}
+Live, themeable web components with real demos — starting with
+[Web MultiSelect](/web-multiselect).
+:::
+
+:::card{title="Guides"}
+Cross-cutting engineering guidance, like the [Backend Guidelines](/backend-guidelines).
+:::
+
+:::card{title="Infrastructure"}
+Cloud and platform notes across [Azure and AWS](/infrastructure).
+:::
+
+:::
+
+See [About](/about) for what this site is and how it is built.
+$md$);
+
+select * from public.ensure_site_page('examples', 'seed', 'hub', 'about', 'About',
+    _content := $md$---
+title: About
+description: What KeenMate Docs is and how it is built.
+keywords: [about, colophon, keen-docs, engine]
+---
+
+# About
+
+**KeenMate Docs** is one multi-tenant site over every KeenMate library. Content is authored
+as a custom markdown superset and rendered server-side; demos are real components, not images.
+
+:::callout{type=info title="A global page"}
+This page belongs to the whole site, not to any single doc_set — it lives in the hub's
+`site_page` table and is reachable at `/about` from anywhere.
+:::
+$md$);
+
+-- Global navigation (site_nav) — the top bar across doc sets. A leaf targets a site_page
+-- (slug), a whole doc_set (doc_set_code → its homepage), or an external URL.
+select * from public.ensure_site_nav('examples', 'seed', 'hub', 'components', 'Components',
+    _is_section := true, _sort_order := 0);
+select * from public.ensure_site_nav('examples', 'seed', 'hub', 'components/web-multiselect', 'Web MultiSelect',
+    _doc_set_code := 'web-multiselect', _sort_order := 0);
+
+select * from public.ensure_site_nav('examples', 'seed', 'hub', 'guides', 'Guides',
+    _doc_set_code := 'backend-guidelines', _sort_order := 1);
+select * from public.ensure_site_nav('examples', 'seed', 'hub', 'infrastructure', 'Infrastructure',
+    _doc_set_code := 'infrastructure', _sort_order := 2);
+select * from public.ensure_site_nav('examples', 'seed', 'hub', 'about', 'About',
+    _slug := 'about', _sort_order := 3);
+select * from public.ensure_site_nav('examples', 'seed', 'hub', 'github', 'GitHub',
+    _url := 'https://github.com/keenmate', _sort_order := 4);
+
 select * from public.stop_version_update('1', _component := 'keen_docs_examples');

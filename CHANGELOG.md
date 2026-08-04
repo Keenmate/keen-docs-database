@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Global (hub) site domain - 2026-08-04
+
+The aggregate site (docs.keenmate.dev) is now first-class, as its **own** tables parallel to
+`doc_set` / `document` / `doc_nav` — explicit, not a reserved magic doc_set:
+
+- **`public.site`** — a top-level site (normally `hub`): title, description, `home_slug`, and a
+  `settings` jsonb (same presentation surface as a doc_set). `ensure_site` / `get_site`.
+- **`public.site_page`** — global standalone pages (About, cross-library guides), not under any
+  doc_set; mirrors `document` (bytes in `content_blob`, the same weighted search projection).
+  `ensure_site_page` (reuses `internal.markdown_to_search_text` / `document_keywords` /
+  `ensure_content_blob`) / `get_site_page`.
+- **`public.site_nav`** — the hub's top navigation as a materialized-path tree (like `doc_nav`),
+  but each leaf targets one of **slug** (internal site_page), **doc_set_code** (→ that set's
+  homepage), or **url** (external) — the cross-set navigation. `ensure_site_nav` / `get_site_nav`.
+- Seed: a `hub` site with an authored homepage + About page and a six-node global nav
+  (Components ▸ Web MultiSelect · Guides · Infrastructure · About · GitHub).
+
 ## doc_set presentation surface + navigation tree - 2026-08-04
 
 ### One fully-specified `doc_set` (`100_docs_content.sql`)

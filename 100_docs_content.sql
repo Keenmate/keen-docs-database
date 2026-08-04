@@ -825,4 +825,263 @@ begin
 end;
 $$;
 
+-- ===========================================================================
+-- Global (hub) domain — the site that AGGREGATES the doc_sets (docs.keenmate.dev): its own
+-- landing, standalone global pages, and a cross-set navigation. Kept as its OWN tables
+-- (site / site_page / site_nav), parallel to doc_set / document / doc_nav, so "the hub" is
+-- explicit rather than a reserved magic doc_set code.
+-- ===========================================================================
+
+-- public.site — a top-level site. Normally one row ('hub'); `code` keys it so a second
+-- aggregate is possible. Same presentation surface as a doc_set (home_slug + settings blob).
+create table if not exists public.site (
+    created_at  timestamp with time zone default now()           not null,
+    created_by  text                     default 'unknown'::text not null,
+    updated_at  timestamp with time zone default now()           not null,
+    updated_by  text                     default 'unknown'::text not null,
+    site_id     integer generated always as identity primary key,
+    code        text not null,
+    title       text,
+    description text,
+    home_slug   text,
+    settings    jsonb not null default '{}'::jsonb
+);
+create unique index if not exists uq_site_code on public.site (code);
+
+-- public.site_page — a global standalone page (About, Contributing, a cross-library guide),
+-- not tied to any doc_set. Parallels public.document: bytes in content_blob, the same derived
+-- weighted search projection.
+create table if not exists public.site_page (
+    created_at      timestamp with time zone default now()           not null,
+    created_by      text                     default 'unknown'::text not null,
+    updated_at      timestamp with time zone default now()           not null,
+    updated_by      text                     default 'unknown'::text not null,
+    site_page_id    bigint  generated always as identity primary key,
+    site_id         integer not null references public.site,
+    slug            text    not null,
+    title           text,
+    content_sha     text    not null references public.content_blob,
+    frontmatter     jsonb   default '{}'::jsonb not null,
+    nrm_search_data text,
+    nrm_keywords    text,
+    search_vector   tsvector generated always as (
+        setweight(to_tsvector('simple', coalesce(title, '')),           'A') ||
+        setweight(to_tsvector('simple', coalesce(nrm_keywords, '')),    'B') ||
+        setweight(to_tsvector('simple', coalesce(nrm_search_data, '')), 'C')
+    ) stored
+);
+create unique index if not exists uq_site_page        on public.site_page (site_id, slug);
+create index        if not exists ix_site_page_search on public.site_page using gin (search_vector);
+create index        if not exists ix_trgm_site_page   on public.site_page using gist (nrm_search_data ext.gist_trgm_ops);
+
+-- public.site_nav — the hub's top-level navigation, a materialized-path tree like doc_nav.
+-- A leaf targets exactly one of: an internal site_page (slug), a whole doc_set (doc_set_code →
+-- its homepage), or an external URL — that union IS the cross-set navigation.
+create table if not exists public.site_nav (
+    created_at   timestamp with time zone default now()           not null,
+    created_by   text                     default 'unknown'::text not null,
+    updated_at   timestamp with time zone default now()           not null,
+    updated_by   text                     default 'unknown'::text not null,
+    site_nav_id  integer   generated always as identity primary key,
+    site_id      integer   not null references public.site,
+    node_path    ext.ltree not null,
+    label        text      not null,
+    full_title   text,
+    slug         text,
+    doc_set_code text,
+    url          text,
+    is_section   boolean   not null default false,
+    has_children boolean   not null default false,
+    sort_order   integer   not null default 0,
+    sort_key     text
+);
+create unique index if not exists uq_site_nav      on public.site_nav (site_id, node_path);
+create index        if not exists ix_site_nav_path on public.site_nav using gist (node_path);
+create index        if not exists ix_site_nav_site on public.site_nav (site_id, sort_key);
+
+-- ---- functions -----------------------------------------------------------
+
+create or replace function public.ensure_site(
+    _created_by text, _correlation_id text, _code text,
+    _title text default null, _description text default null,
+    _home_slug text default null, _settings jsonb default null,
+    _tenant_id integer default 1
+)
+returns table(__site_id integer, __code text, __title text, __description text,
+              __home_slug text, __settings jsonb)
+rows 1
+language plpgsql
+as $$
+begin
+    return query
+        insert into public.site as s
+            (code, title, description, home_slug, settings, created_by, updated_by)
+        values (_code, _title, _description, _home_slug,
+                coalesce(_settings, '{}'::jsonb), _created_by, _created_by)
+        on conflict (code) do update
+            set title       = coalesce(_title, s.title),
+                description = coalesce(_description, s.description),
+                home_slug   = coalesce(_home_slug, s.home_slug),
+                settings    = coalesce(_settings, s.settings),
+                updated_by  = _created_by,
+                updated_at  = now()
+        returning s.site_id, s.code, s.title, s.description, s.home_slug, s.settings;
+end;
+$$;
+
+create or replace function public.get_site(_code text)
+returns table(__code text, __title text, __description text, __home_slug text, __settings jsonb)
+rows 1
+language sql
+stable
+as $$
+    select s.code, s.title, s.description, s.home_slug, s.settings
+    from public.site s
+    where s.code = _code;
+$$;
+
+-- ensure_site_page — publish a global page (mirrors ensure_document, without a variant).
+create or replace function public.ensure_site_page(
+    _created_by text, _correlation_id text, _site_code text,
+    _slug text, _title text, _content text,
+    _frontmatter jsonb default '{}'::jsonb, _content_sha text default null,
+    _search_text text default null, _tenant_id integer default 1
+)
+returns table(__site_page_id bigint, __content_sha text, __deduped boolean)
+rows 1
+language plpgsql
+as $$
+declare
+    __site_id     integer;
+    __bytes       bytea := convert_to(_content, 'UTF8');
+    __sha         text;
+    __deduped     boolean;
+    __frontmatter jsonb := coalesce(_frontmatter, '{}'::jsonb);
+    __nrm         text  := lower(ext.unaccent(
+                              coalesce(_search_text, internal.markdown_to_search_text(_content))));
+    __keywords    text  := internal.document_keywords(__frontmatter);
+begin
+    select s.site_id into __site_id from public.site s where s.code = _site_code;
+    if __site_id is null then
+        raise exception 'ensure_site_page: unknown site %', _site_code;
+    end if;
+
+    __sha := coalesce(_content_sha, 'sha256:' || encode(sha256(__bytes), 'hex'));
+
+    select ecb.__deduped into __deduped
+    from public.ensure_content_blob(_created_by, __sha, __bytes, octet_length(__bytes)) ecb;
+
+    return query
+        insert into public.site_page as p
+            (site_id, slug, title, content_sha, frontmatter,
+             nrm_search_data, nrm_keywords, created_by, updated_by)
+        values
+            (__site_id, _slug, _title, __sha, __frontmatter,
+             __nrm, __keywords, _created_by, _created_by)
+        on conflict (site_id, slug) do update
+            set title           = excluded.title,
+                content_sha     = excluded.content_sha,
+                frontmatter     = excluded.frontmatter,
+                nrm_search_data = excluded.nrm_search_data,
+                nrm_keywords    = excluded.nrm_keywords,
+                updated_by      = _created_by,
+                updated_at      = now()
+        returning p.site_page_id, __sha, __deduped;
+end;
+$$;
+
+create or replace function public.get_site_page(_site_code text, _slug text)
+returns table(__slug text, __title text, __content text, __frontmatter jsonb)
+rows 1
+language plpgsql
+stable
+as $$
+begin
+    return query
+        select p.slug, p.title, convert_from(b.content, 'UTF8'), p.frontmatter
+        from public.site_page p
+            inner join public.site s         on s.site_id = p.site_id
+            inner join public.content_blob b on b.sha = p.content_sha
+        where s.code = _site_code and p.slug = _slug;
+end;
+$$;
+
+-- ensure_site_nav — upsert a hub nav node (mirrors ensure_doc_nav). A leaf targets a
+-- site_page (_slug), a doc_set (_doc_set_code) or an external URL (_url).
+create or replace function public.ensure_site_nav(
+    _created_by text, _correlation_id text, _site_code text,
+    _node_path text, _label text,
+    _slug text default null, _doc_set_code text default null, _url text default null,
+    _sort_order integer default 0, _is_section boolean default false,
+    _tenant_id integer default 1
+)
+returns table(__site_nav_id integer, __node_path text, __full_title text, __has_children boolean)
+rows 1
+language plpgsql
+as $$
+declare
+    __site_id      integer;
+    __path         ext.ltree := helpers.path_to_ltree(_node_path);
+    __parent       ext.ltree := helpers.ltree_parent(__path);
+    __has_parent   boolean   := ext.nlevel(__path) > 1;
+    __parent_title text;
+    __parent_sort  text;
+begin
+    select s.site_id into __site_id from public.site s where s.code = _site_code;
+    if __site_id is null then
+        raise exception 'ensure_site_nav: unknown site %', _site_code;
+    end if;
+
+    if __has_parent then
+        select n.full_title, n.sort_key into __parent_title, __parent_sort
+        from public.site_nav n
+        where n.site_id = __site_id and n.node_path = __parent;
+    end if;
+
+    return query
+        insert into public.site_nav as n
+            (site_id, node_path, label, slug, doc_set_code, url, is_section, sort_order,
+             full_title, sort_key, created_by, updated_by)
+        values
+            (__site_id, __path, _label, _slug, _doc_set_code, _url, _is_section, _sort_order,
+             nullif(concat_ws(' / ', __parent_title, _label), ''),
+             concat(coalesce(__parent_sort, ''), lpad(_sort_order::text, 4, '0'), '.'),
+             _created_by, _created_by)
+        on conflict (site_id, node_path) do update
+            set label        = _label,
+                slug         = _slug,
+                doc_set_code = _doc_set_code,
+                url          = _url,
+                is_section   = _is_section,
+                sort_order   = _sort_order,
+                full_title   = nullif(concat_ws(' / ', __parent_title, _label), ''),
+                sort_key     = concat(coalesce(__parent_sort, ''), lpad(_sort_order::text, 4, '0'), '.'),
+                updated_by   = _created_by,
+                updated_at   = now()
+        returning n.site_nav_id, n.node_path::text, n.full_title, n.has_children;
+
+    if __has_parent then
+        update public.site_nav p
+        set has_children = true, updated_at = now(), updated_by = _created_by
+        where p.site_id = __site_id and p.node_path = __parent and p.has_children = false;
+    end if;
+end;
+$$;
+
+create or replace function public.get_site_nav(_site_code text)
+returns table(
+    __level integer, __node_path text, __label text, __full_title text,
+    __slug text, __doc_set_code text, __url text, __is_section boolean, __has_children boolean
+)
+language sql
+stable
+as $$
+    select ext.nlevel(n.node_path)::integer, n.node_path::text, n.label, n.full_title,
+           n.slug, n.doc_set_code, n.url, n.is_section, n.has_children
+    from public.site_nav n
+        inner join public.site s on s.site_id = n.site_id
+    where s.code = _site_code
+    order by n.sort_key;
+$$;
+
 select * from public.stop_version_update('1', _component := 'keen_docs');
