@@ -443,13 +443,24 @@ $md$);
 -- in the node path; sort_order orders siblings. get_doc_nav('web-multiselect') then returns
 -- these already in render order — a single ordered select, no recursion.
 --
---   Overview                        (leaf → index)
+--   Project                         (section)   -- leads the sidebar
+--     Overview                       (leaf → index, versioned)
+--     Changelog                      (leaf → changelog, shared)
+--     Migration v1 → v2              (leaf → migration, shared)
 --   Guides                          (section)
 --     Form integration              (leaf → form-integration)
 --   Live demos                      (section)
 --     Interactive islands           (leaf → islands)
-select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'overview', 'Overview',
+-- Project section leads and holds Overview + the DOC-SET-WIDE leaves (changelog/migration pin
+-- _variant_code := 'shared', so they link to /web-multiselect/changelog under every version).
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project', 'Project',
+    _is_section := true, _sort_order := 0);
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project/overview', 'Overview',
     _slug := 'index', _sort_order := 0);
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project/changelog', 'Changelog',
+    _slug := 'changelog', _variant_code := 'shared', _sort_order := 1);
+select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project/migration', 'Migration v1 → v2',
+    _slug := 'migration', _variant_code := 'shared', _sort_order := 2);
 
 select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'guides', 'Guides',
     _is_section := true, _sort_order := 1);
@@ -460,16 +471,6 @@ select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'demo
     _is_section := true, _sort_order := 2);
 select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'demos/islands', 'Interactive islands',
     _slug := 'islands', _sort_order := 0);
-
--- Project section — DOC-SET-WIDE leaves: each pins _variant_code := 'shared', so the sidebar
--- links to /web-multiselect/changelog (no version segment) and the same link shows under
--- every version.
-select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project', 'Project',
-    _is_section := true, _sort_order := 3);
-select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project/changelog', 'Changelog',
-    _slug := 'changelog', _variant_code := 'shared', _sort_order := 0);
-select * from public.ensure_doc_nav('examples', 'seed', 'web-multiselect', 'project/migration', 'Migration v1 → v2',
-    _slug := 'migration', _variant_code := 'shared', _sort_order := 1);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. INFRASTRUCTURE set: azure / aws divisions, no versions, no package
