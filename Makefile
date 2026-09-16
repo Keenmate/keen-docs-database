@@ -1,5 +1,27 @@
 .PHONY: help test test-documents setup update sql
 
+# Pick the debee driver for the current platform: PowerShell on Windows, Python elsewhere.
+# (debee.sh needs bash 4+ for ${VAR,,}; macOS ships bash 3.2.)
+UNAME_S := $(shell uname -s)
+
+ifneq (,$(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)))
+  DEBEE       = powershell.exe -File ./debee.ps1
+  OP          = -Operations
+  TEST_FILTER = -TestFilter
+else
+  DEBEE       = python3 ./debee.py
+  OP          = --operations
+  TEST_FILTER = --test-filter
+endif
+
+# Homebrew keg-only libpq is not on PATH by default; psql/pg_restore live there.
+ifeq ($(UNAME_S),Darwin)
+  LIBPQ_BIN := $(shell brew --prefix libpq 2>/dev/null)
+  ifneq (,$(LIBPQ_BIN))
+    export PATH := $(LIBPQ_BIN)/bin:$(PATH)
+  endif
+endif
+
 # Show available targets
 help:
 	@echo "Usage: make [target]"
@@ -15,19 +37,19 @@ help:
 
 # Run all tests
 test:
-	powershell.exe -File ./debee.ps1 -Operations runTests
+	$(DEBEE) $(OP) runTests
 
 # Run specific test suites
 test-documents:
-	powershell.exe -File ./debee.ps1 -Operations runTests -TestFilter documents
+	$(DEBEE) $(OP) runTests $(TEST_FILTER) documents
 
-# Database operations (via debee.ps1)
+# Database operations (via debee)
 setup:
-	powershell.exe -File ./debee.ps1 -Operations fullService
+	$(DEBEE) $(OP) fullService
 
 update:
-	powershell.exe -File ./debee.ps1 -Operations updateDatabase
+	$(DEBEE) $(OP) updateDatabase
 
 # Run arbitrary SQL
 sql:
-	powershell.exe -File ./debee.ps1 -Operations execSql
+	$(DEBEE) $(OP) execSql
